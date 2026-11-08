@@ -1,0 +1,8 @@
+=== Plataformas OpenCL Encontradas: 1 ===
+
+[0] Plataforma: NVIDIA CUDA
+    Fornecedor: NVIDIA Corporation
+    Versão:     OpenCL 3.0 CUDA 13.0.100
+    Dispositivos associados (1):
+        -> [0] Dispositivo: NVIDIA TITAN RTX
+            Unidades de Computação: 72
