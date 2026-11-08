@@ -1,0 +1,6 @@
+serial
+results/*.log
+results/*.bin
+*.o
+*.ppm
+
