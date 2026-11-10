@@ -1,35 +1,78 @@
-CC ?= gcc
-CFLAGS = -O2
-LIBS = -lm
+# ==============================================================================
+# Configurações do Compilador e Flags
+# ==============================================================================
+CC          ?= gcc
+CFLAGS      = -O2 -Wall -Wextra
+INCLUDES    = -I/usr/include
+LIBS_MATH   = -lm
+LIBS_OPENCL = -lOpenCL
 
-SRC_DIR = serial_c_code
-SRCS = $(SRC_DIR)/image_generator.c $(SRC_DIR)/mandelbrot.c $(SRC_DIR)/complex.c
-HDRS = $(SRC_DIR)/mandelbrot.h $(SRC_DIR)/complex.h
-TARGET = serial
+# ==============================================================================
+# Diretórios e Arquivos
+# ==============================================================================
+# 1. Projeto Serial (C Mandelbrot)
+SERIAL_DIR    = serial_c_code
+SERIAL_SRCS   = $(SERIAL_DIR)/image_generator.c \
+                $(SERIAL_DIR)/mandelbrot.c \
+                $(SERIAL_DIR)/complex.c
+SERIAL_HDRS   = $(SERIAL_DIR)/mandelbrot.h \
+                $(SERIAL_DIR)/complex.h
+SERIAL_TARGET = serial
 
-.PHONY: all build run test clean help
+# 2. Utilitários (OpenCL Inspector)
+UTILS_DIR     = utils
+UTILS_SRCS    = $(UTILS_DIR)/plataform.c
+UTILS_TARGET  = $(UTILS_DIR)/plataform
 
-all: build
+# ==============================================================================
+# Alvos e Regras do Make
+# ==============================================================================
+.PHONY: all build utils plataform run test clean help
 
-build: $(TARGET)
+# Alvo padrão
+all: build utils
 
-$(TARGET): $(SRCS) $(HDRS)
-	$(CC) $(CFLAGS) $(SRCS) $(LIBS) -o $(TARGET)
+# --- Módulos Principais ---
+build: $(SERIAL_TARGET)
 
+utils: $(UTILS_TARGET)
+
+# Compila o utilitário (se necessário) e EXECUTA imediatamente
+plataform: $(UTILS_TARGET)
+	./$(UTILS_TARGET)
+
+# --- Compilação dos Binários ---
+$(SERIAL_TARGET): $(SERIAL_SRCS) $(SERIAL_HDRS)
+	$(CC) $(CFLAGS) $(SERIAL_SRCS) $(LIBS_MATH) -o $@
+
+$(UTILS_TARGET): $(UTILS_SRCS)
+	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LIBS_OPENCL)
+
+# --- Execução e Testes ---
 run: build
 	./run_serial.sh
 
 test: build
 	./run_serial.sh --quick
 
+# --- Limpeza ---
 clean:
-	rm -f $(TARGET)
+	rm -f $(SERIAL_TARGET)
+	rm -f $(UTILS_TARGET)
 	rm -f results/*.log
 
+# --- Ajuda ---
 help:
-	@echo "Alvos disponíveis no Makefile:"
-	@echo "  make build  - Compila o código serial com gcc -O2"
-	@echo "  make run    - Executa o benchmark completo (3x ~200s) e gera relatório e lscpu"
-	@echo "  make test   - Executa teste rápido (3 execuções curtas de ~0.1s para teste)"
-	@echo "  make clean  - Limpa o executável serial e logs temporários"
-
+	@echo "======================================================================"
+	@echo "                     MAKEFILE - MANDELBROT HPC                        "
+	@echo "======================================================================"
+	@echo "Alvos Disponíveis:"
+	@echo "  make build      - Compila apenas o código C serial ($(SERIAL_TARGET))"
+	@echo "  make plataform  - Compila E EXECUTA o inspetor OpenCL ($(UTILS_TARGET))"
+	@echo "  make utils      - Compila apenas o inspetor OpenCL (sem rodar)"
+	@echo "  make all        - Compila o código serial e os utilitários"
+	@echo "  make run        - Executa o benchmark serial completo (run_serial.sh)"
+	@echo "  make test       - Executa o benchmark rápido de validação (--quick)"
+	@echo "  make clean      - Remove executáveis e logs temporários"
+	@echo "  make help       - Exibe esta mensagem de ajuda"
+	@echo "======================================================================"
