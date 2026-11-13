@@ -1,6 +1,6 @@
 serial
-results/*.log
-results/*.bin
+results/*/*.log
+results/*/*.bin
 *.o
 *.ppm
 /local

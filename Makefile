@@ -35,8 +35,6 @@ all: build utils
 # --- Módulos Principais ---
 build: $(SERIAL_TARGET)
 
-utils: $(UTILS_TARGET)
-
 # Compila o utilitário (se necessário) e EXECUTA imediatamente
 plataform: $(UTILS_TARGET)
 	./$(UTILS_TARGET)

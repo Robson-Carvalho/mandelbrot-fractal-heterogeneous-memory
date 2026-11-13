@@ -4,8 +4,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+HOST_NAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')
 RESULTS_DIR="results"
-mkdir -p "$RESULTS_DIR"
+HOST_RESULTS_DIR="$RESULTS_DIR/$HOST_NAME"
+mkdir -p "$HOST_RESULTS_DIR"
 
 DEFAULT_WIDTH=24576
 DEFAULT_HEIGHT=18432
@@ -14,9 +16,9 @@ DEFAULT_MAX_X="1.0"
 DEFAULT_MIN_Y="-1.5"
 DEFAULT_MAX_Y="1.5"
 DEFAULT_MAX_ITER=1500
-DEFAULT_OUTPUT_IMG="/dev/null"
+DEFAULT_OUTPUT_IMG="$HOST_RESULTS_DIR/mandelbrot_serial.ppm"
 DEFAULT_RUNS=3
-OUTPUT_IMG="results/mandelbrot_serial.ppm" 
+OUTPUT_IMG="$DEFAULT_OUTPUT_IMG"
 
 if [ "$1" == "--quick" ] || [ "$1" == "-q" ]; then
     echo ">>> [AVISO] Executando em modo rápido de teste (--quick)..."
@@ -56,16 +58,16 @@ echo "Compilando: $COMPILE_CMD"
 $COMPILE_CMD
 
 # Salvar lscpu
-LSCPU_FILE="$RESULTS_DIR/lscpu.txt"
+LSCPU_FILE="$HOST_RESULTS_DIR/lscpu.txt"
 lscpu > "$LSCPU_FILE"
-CLINFO_FILE="$RESULTS_DIR/clinfo.txt"
+CLINFO_FILE="$HOST_RESULTS_DIR/clinfo.txt"
 clinfo > "$CLINFO_FILE"
-NVIDIASMI_FILE="$RESULTS_DIR/nvidia-smi.txt"
+NVIDIASMI_FILE="$HOST_RESULTS_DIR/nvidia-smi.txt"
 nvidia-smi -q > "$NVIDIASMI_FILE"
 echo "lscpu salvo em: $LSCPU_FILE"
 
 GCC_VERSION_STR=$($CC --version | head -n 1)
-REPORT_FILE="$RESULTS_DIR/serial_benchmark_report.txt"
+REPORT_FILE="$HOST_RESULTS_DIR/serial_benchmark_report.txt"
 
 echo "----------------------------------------------------------"
 echo "Parâmetros Congelados:"
@@ -88,8 +90,8 @@ TOTAL_ITERS=""
 
 for i in $(seq 1 $RUNS); do
     echo ">>> Iniciando Execução $i de $RUNS..."
-    RUN_LOG="$RESULTS_DIR/run_${i}.log"
-    TIME_LOG="$RESULTS_DIR/run_${i}_time.log"
+    RUN_LOG="$HOST_RESULTS_DIR/run_${i}.log"
+    TIME_LOG="$HOST_RESULTS_DIR/run_${i}_time.log"
 
     # Executa usando /usr/bin/time -v
     /usr/bin/time -v $BINARY "$WIDTH" "$HEIGHT" "$MIN_X" "$MAX_X" "$MIN_Y" "$MAX_Y" "$MAX_ITER" "$OUTPUT_IMG" > "$RUN_LOG" 2> "$TIME_LOG"
@@ -149,6 +151,6 @@ python3 "$SCRIPT_DIR/generate_report.py" \
     --report-file="$REPORT_FILE"
 
 # Limpar logs intermediários de cada rodada
-rm -f "$RESULTS_DIR"/run_*.log
+rm -f "$HOST_RESULTS_DIR"/run_*.log
 
 echo "Relatório gerado com sucesso em: $REPORT_FILE"
