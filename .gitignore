@@ -1,4 +1,5 @@
 serial
+mandelbrot_opencl
 results/*/*.log
 results/*/*.bin
 *.o
