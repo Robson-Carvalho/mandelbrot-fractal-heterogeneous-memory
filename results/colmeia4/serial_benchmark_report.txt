@@ -1,0 +1,33 @@
+================================================================================
+RELATÓRIO DE EXECUÇÃO SERIAL - CONJUNTO DE MANDELBROT (HPC)
+================================================================================
+
+1. PARÂMETROS CONGELADOS DO PROBLEMA:
+   - Resolução:                   24576 x 18432 (452,984,832 pixels)
+   - Região do plano complexo:    [-2.0, 1.0] x [-1.5, 1.5]
+   - Max iterações por pixel:     1500
+   - Saída de imagem:             results/colmeia4/mandelbrot_serial.ppm
+
+2. INFORMAÇÕES DE AMBIENTE E COMPILAÇÃO:
+   - Compilador:                  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+   - Linha de compilação:         gcc -O2 serial_c_code/image_generator.c serial_c_code/mandelbrot.c serial_c_code/complex.c -lm -o ./serial
+   - Flags:                       -O2
+   - lscpu:                       Salvo em results/colmeia4/lscpu.txt
+
+3. CONTAGEM GLOBAL E ESTIMATIVA DE FLOPS:
+   - Total de iterações somadas:  116,197,579,495
+   - Operações por iteração:      8 FLOP/iteração
+   - Total estimado de FLOPs:     929,580,635,960 FLOPs
+   - Desempenho Serial:           4.3035 GFLOPS
+
+4. RESULTADOS DAS 3 EXECUÇÕES:
+--------------------------------------------------------------------------------
+Execução | clock_gettime (s) | Wall-clock (s) | User time (s) | System (s) | Max RSS (KB)
+--------------------------------------------------------------------------------
+       1 |        215.968461 |        216.240 |        214.20 |       0.86 |         2112
+       2 |        215.965250 |        216.240 |        214.21 |       0.85 |         2112
+       3 |        216.089731 |        216.370 |        214.26 |       0.86 |         2304
+--------------------------------------------------------------------------------
+MÉDIA    |        216.007814 |        216.283 |        214.22 |       0.86 |         2176
+DESV.PAD |          0.070960 |
+================================================================================
