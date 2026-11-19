@@ -16,6 +16,16 @@
 #define DEFAULT_LOCAL     16
 #define DEFAULT_OUTPUT    "opencl_images/mandelbrot_opencl.pgm"
 
+// Saida padronizada "CHAVE: valor" (facil de dar grep/awk)
+#define KV_STR(k, v)   printf("%s: %s\n", k, v)
+#define KV_INT(k, v)   printf("%s: %lld\n", k, (long long)(v))
+#define KV_ULL(k, v)   printf("%s: %llu\n", k, (unsigned long long)(v))
+#define KV_DBL(k, v)   printf("%s: %.6f\n", k, (double)(v))
+
+#define PEAK_BW_GBS     672.0    // TITAN RTX
+#define PEAK_GFLOPS     16300.0  // FP32 TITAN RTX
+#define FLOP_PER_ITER   8.0
+
 #define MIN_X (-2.0f)
 #define MAX_X ( 1.0f)
 #define MIN_Y (-1.5f)
@@ -128,6 +138,18 @@ static int save_pgm(const char *path, const cl_ushort *iters,
    return 0;
 }
 
+// Duracao (ns) de um evento OpenCL: END - START
+static double event_ns(cl_event ev, const char *msg)
+{
+   cl_ulong t0 = 0, t1 = 0;
+   cl_int err;
+   err = clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(t0), &t0, NULL);
+   checkError(err, msg);
+   err = clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(t1), &t1, NULL);
+   checkError(err, msg);
+   return (double)(t1 - t0);
+}
+
 int main(int argc, char **argv)
 {
    cl_int err;
@@ -138,6 +160,7 @@ int main(int argc, char **argv)
    size_t local[2] = { DEFAULT_LOCAL, DEFAULT_LOCAL };
    const char *output_file = DEFAULT_OUTPUT;
 
+   // Uso: ./mandelbrot_opencl [width height max_iter [local_x local_y [saida.pgm | none]]]
    if (argc >= 4) {
       width    = atoi(argv[1]);
       height   = atoi(argv[2]);
@@ -150,36 +173,67 @@ int main(int argc, char **argv)
    if (argc >= 7) {
       output_file = argv[6];
    }
+   int save_image = (strcmp(output_file, "none") != 0 && strcmp(output_file, "-") != 0);
+
    if (width <= 0 || height <= 0 || max_iter <= 0 || max_iter > 65535 ||
        local[0] == 0 || local[1] == 0) {
       printf("Erro: parametros invalidos (max_iter deve estar em 1..65535).\n");
       return EXIT_FAILURE;
    }
 
+   // ================= T_total comeca aqui (setup incluido) =================
+   double t_start = wtime();
+
    cl_platform_id platforms[16];
    cl_uint num_platforms = 0;
    err = clGetPlatformIDs(16, platforms, &num_platforms);
    checkError(err, "clGetPlatformIDs");
 
+   cl_platform_id platform = NULL;
    cl_device_id device;
    int found = 0;
    for (cl_uint i = 0; i < num_platforms && !found; i++) {
-      found = (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 1, &device, NULL) == CL_SUCCESS);
+      if (clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_GPU, 1, &device, NULL) == CL_SUCCESS) {
+         platform = platforms[i];
+         found = 1;
+      }
    }
    if (!found) {
       printf("Erro: nenhuma GPU OpenCL encontrada.\n");
       return EXIT_FAILURE;
    }
 
-   char name[256];
-   clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(name), name, NULL);
-   printf("Dispositivo : %s\n", name);
+   // ---- Informacoes do dispositivo ----
+   char dev_name[256], plat_name[256], dev_ver[256];
+   cl_uint compute_units = 0;
+   size_t max_wg_dev = 0;
+   size_t max_item_sizes[3] = {0, 0, 0};
+   cl_ulong local_mem = 0, global_mem = 0, max_alloc = 0;
 
-   // ---- Contexto e fila de comandos ----
+   err = clGetPlatformInfo(platform, CL_PLATFORM_NAME, sizeof(plat_name), plat_name, NULL);
+   checkError(err, "clGetPlatformInfo(CL_PLATFORM_NAME)");
+   err = clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(dev_name), dev_name, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_NAME)");
+   err = clGetDeviceInfo(device, CL_DEVICE_VERSION, sizeof(dev_ver), dev_ver, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_VERSION)");
+   err = clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_MAX_COMPUTE_UNITS)");
+   err = clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_wg_dev), &max_wg_dev, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_MAX_WORK_GROUP_SIZE)");
+   err = clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_item_sizes), max_item_sizes, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_MAX_WORK_ITEM_SIZES)");
+   err = clGetDeviceInfo(device, CL_DEVICE_LOCAL_MEM_SIZE, sizeof(local_mem), &local_mem, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_LOCAL_MEM_SIZE)");
+   err = clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem), &global_mem, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_GLOBAL_MEM_SIZE)");
+   err = clGetDeviceInfo(device, CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(max_alloc), &max_alloc, NULL);
+   checkError(err, "clGetDeviceInfo(CL_DEVICE_MAX_MEM_ALLOC_SIZE)");
+
+   // ---- Contexto e fila de comandos (com profiling) ----
    cl_context context = clCreateContext(0, 1, &device, NULL, NULL, &err);
    checkError(err, "clCreateContext");
 
-   cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
+   cl_command_queue queue = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &err);
    checkError(err, "clCreateCommandQueue");
 
    // ---- Carrega, compila e cria o kernel ----
@@ -197,33 +251,37 @@ int main(int argc, char **argv)
       char log[8192];
       clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, sizeof(log), log, NULL);
       printf("Erro ao compilar o kernel:\n%s\n", log);
-      return EXIT_FAILURE;
    }
+   checkError(err, "clBuildProgram");
 
    cl_kernel kernel = clCreateKernel(program, "mandelbrot", &err);
    checkError(err, "clCreateKernel");
 
-   // ---- NDRange: o global precisa ser MULTIPLO do local ----
-   size_t max_wg;
-   clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_WORK_GROUP_SIZE, sizeof(max_wg), &max_wg, NULL);
-   if (local[0] * local[1] > max_wg) {
+   // ---- Limites do kernel ----
+   size_t k_max_wg = 0, k_pref_mult = 0;
+   cl_ulong k_local_mem = 0, k_private_mem = 0;
+   err = clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_WORK_GROUP_SIZE, sizeof(k_max_wg), &k_max_wg, NULL);
+   checkError(err, "clGetKernelWorkGroupInfo(CL_KERNEL_WORK_GROUP_SIZE)");
+   err = clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, sizeof(k_pref_mult), &k_pref_mult, NULL);
+   checkError(err, "clGetKernelWorkGroupInfo(CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE)");
+   err = clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_LOCAL_MEM_SIZE, sizeof(k_local_mem), &k_local_mem, NULL);
+   checkError(err, "clGetKernelWorkGroupInfo(CL_KERNEL_LOCAL_MEM_SIZE)");
+   err = clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_PRIVATE_MEM_SIZE, sizeof(k_private_mem), &k_private_mem, NULL);
+   checkError(err, "clGetKernelWorkGroupInfo(CL_KERNEL_PRIVATE_MEM_SIZE)");
+
+   size_t wg_items = local[0] * local[1];
+   if (wg_items > k_max_wg) {
       printf("Erro: local %zux%zu = %zu work-items, maximo deste kernel = %zu.\n",
-             local[0], local[1], local[0] * local[1], max_wg);
+             local[0], local[1], wg_items, k_max_wg);
       return EXIT_FAILURE;
    }
 
+   // ---- NDRange: o global precisa ser MULTIPLO do local ----
    size_t global[2] = { round_up(width,  local[0]),
                         round_up(height, local[1]) };
 
-   printf("Imagem      : %d x %d (%zu pixels), max_iter = %d\n",
-          width, height, (size_t)width * height, max_iter);
-   printf("Local size  : %zu x %zu\n", local[0], local[1]);
-   printf("Global size : %zu x %zu\n", global[0], global[1]);
-
-   size_t mem_size = (size_t)width * height * sizeof(cl_ushort);
-
-   cl_ulong max_alloc;
-   clGetDeviceInfo(device, CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(max_alloc), &max_alloc, NULL);
+   size_t n_pixels = (size_t)width * height;
+   size_t mem_size = n_pixels * sizeof(cl_ushort);
    if (mem_size > max_alloc) {
       printf("Erro: buffer de %zu bytes excede o maximo do device (%lu bytes).\n",
              mem_size, (unsigned long)max_alloc);
@@ -232,6 +290,12 @@ int main(int argc, char **argv)
 
    cl_mem d_iters = clCreateBuffer(context, CL_MEM_WRITE_ONLY, mem_size, NULL, &err);
    checkError(err, "clCreateBuffer");
+
+   cl_ushort *h_iters = (cl_ushort *)malloc(mem_size);
+   if (!h_iters) {
+      printf("Erro: falha ao alocar memoria no host.\n");
+      return EXIT_FAILURE;
+   }
 
    // ---- Argumentos do kernel ----
    float minX = MIN_X, maxX = MAX_X, minY = MIN_Y, maxY = MAX_Y;
@@ -245,59 +309,116 @@ int main(int argc, char **argv)
    err |= clSetKernelArg(kernel, 7, sizeof(int),    &max_iter);
    checkError(err, "clSetKernelArg");
 
+   double t_setup_end = wtime();
+
+   // ---- Aquecimento (NAO entra no T_total) ----
+   double t_warm0 = wtime();
    err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
    checkError(err, "clEnqueueNDRangeKernel (aquecimento)");
-   clFinish(queue);
+   err = clFinish(queue);
+   checkError(err, "clFinish (aquecimento)");
+   double t_warm = wtime() - t_warm0;
 
-   // ---- Execucao medida ----
-   double t0 = wtime();
-   err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
+   // ---- Execucao medida: kernel ----
+   cl_event ev_kernel;
+   double t_k0 = wtime();
+   err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, &ev_kernel);
    checkError(err, "clEnqueueNDRangeKernel");
-   clFinish(queue);
-   double t1 = wtime();
+   err = clFinish(queue);
+   checkError(err, "clFinish");
+   double t_kernel_wall = wtime() - t_k0;
 
-
-   cl_ushort *h_iters = (cl_ushort *)malloc(mem_size);
-   if (!h_iters) {
-      printf("Erro: falha ao alocar memoria no host.\n");
-      return EXIT_FAILURE;
-   }
-
-   err = clEnqueueReadBuffer(queue, d_iters, CL_TRUE, 0, mem_size, h_iters, 0, NULL, NULL);
+   // ---- Transferencia device -> host ----
+   cl_event ev_read;
+   double t_r0 = wtime();
+   err = clEnqueueReadBuffer(queue, d_iters, CL_TRUE, 0, mem_size, h_iters, 0, NULL, &ev_read);
    checkError(err, "clEnqueueReadBuffer");
+   double t_read_wall = wtime() - t_r0;
 
-   unsigned long long total = 0;
-   size_t n_pixels = (size_t)width * height;
-   for (size_t i = 0; i < n_pixels; i++) total += h_iters[i];
+   // ================= fim do T_total (sem aquecimento, sem PGM) =================
+   double t_end = wtime();
 
-   double time_kernel = t1 - t0;
-   printf("\nTempo do kernel      : %.6f s\n", time_kernel);
-   printf("Total de iteracoes   : %llu\n", total);
-   printf("Desempenho           : %.2f GFLOPS (8 FLOP/iteracao)\n",
-          (double)total * 8.0 / time_kernel / 1e9);
+   double t_total  = (t_end - t_start) - t_warm;
+   double t_setup  = t_setup_end - t_start;
+   double kernel_ns = event_ns(ev_kernel, "clGetEventProfilingInfo(kernel)");
+   double read_ns   = event_ns(ev_read,   "clGetEventProfilingInfo(read)");
+   double kernel_s  = kernel_ns / 1e9;
 
-   double t_img0 = wtime();
-   if (save_pgm(output_file, h_iters, width, height, max_iter) != 0) {
-      free(h_iters);
-      free(source);
-      clReleaseMemObject(d_iters);
-      clReleaseKernel(kernel);
-      clReleaseProgram(program);
-      clReleaseCommandQueue(queue);
-      clReleaseContext(context);
-      return EXIT_FAILURE;
+   unsigned long long total_iters = 0;
+   for (size_t i = 0; i < n_pixels; i++) total_iters += h_iters[i];
+
+   // ---- Metricas ----
+   double bytes_written = (double)mem_size;  // 1 ushort por pixel
+   double bytes_read    = 0.0;               // kernel nao le nada da memoria global
+   double bw_gbs        = (bytes_read + bytes_written) / kernel_ns;  // bytes/ns == GB/s
+   double gflops        = (double)total_iters * FLOP_PER_ITER / kernel_ns; // flop/ns == GFLOPS
+
+   // ---- Saida CHAVE: valor ----
+   KV_STR("PLATFORM_NAME", plat_name);
+   KV_STR("DEVICE_NAME", dev_name);
+   KV_STR("DEVICE_OPENCL_VERSION", dev_ver);
+   KV_INT("MAX_COMPUTE_UNITS", compute_units);
+   KV_INT("MAX_WORK_GROUP_SIZE", max_wg_dev);
+   printf("MAX_WORK_ITEM_SIZES: %zu %zu %zu\n", max_item_sizes[0], max_item_sizes[1], max_item_sizes[2]);
+   KV_ULL("LOCAL_MEM_SIZE_BYTES", local_mem);
+   KV_ULL("GLOBAL_MEM_SIZE_BYTES", global_mem);
+   KV_ULL("MAX_MEM_ALLOC_SIZE_BYTES", max_alloc);
+   KV_INT("KERNEL_WORK_GROUP_SIZE", k_max_wg);
+   KV_INT("KERNEL_PREFERRED_WG_MULTIPLE", k_pref_mult);
+   KV_ULL("KERNEL_LOCAL_MEM_SIZE_BYTES", k_local_mem);
+   KV_ULL("KERNEL_PRIVATE_MEM_SIZE_BYTES", k_private_mem);
+
+   KV_INT("WIDTH", width);
+   KV_INT("HEIGHT", height);
+   KV_ULL("PIXELS", n_pixels);
+   KV_INT("MAX_ITER", max_iter);
+   KV_INT("LOCAL_X", local[0]);
+   KV_INT("LOCAL_Y", local[1]);
+   KV_INT("WORK_GROUP_ITEMS", wg_items);
+   KV_INT("GLOBAL_X", global[0]);
+   KV_INT("GLOBAL_Y", global[1]);
+
+   KV_DBL("T_SETUP_S", t_setup);
+   KV_DBL("T_WRITE_HTOD_S", 0.0);   // Mandelbrot nao tem dados de entrada
+   KV_DBL("T_WARMUP_S", t_warm);
+   KV_DBL("T_KERNEL_NS", kernel_ns);
+   KV_DBL("T_KERNEL_S", kernel_s);
+   KV_DBL("T_KERNEL_WALL_S", t_kernel_wall);
+   KV_DBL("T_READ_DTOH_NS", read_ns);
+   KV_DBL("T_READ_DTOH_S", t_read_wall);
+   KV_DBL("T_TOTAL_S", t_total);
+   KV_DBL("T_TOTAL_MINUS_KERNEL_S", t_total - kernel_s);
+
+   KV_ULL("TOTAL_ITERATIONS", total_iters);
+   KV_ULL("BYTES_WRITTEN", mem_size);
+   KV_ULL("BYTES_READ", 0);
+   KV_DBL("BANDWIDTH_GBS", bw_gbs);
+   KV_DBL("BANDWIDTH_PCT_PEAK", 100.0 * bw_gbs / PEAK_BW_GBS);
+   KV_DBL("GFLOPS", gflops);
+   KV_DBL("GFLOPS_PCT_PEAK", 100.0 * gflops / PEAK_GFLOPS);
+
+   // ---- Imagem (opcional, fora do T_total) ----
+   if (save_image) {
+      double t_img0 = wtime();
+      if (save_pgm(output_file, h_iters, width, height, max_iter) != 0) {
+         return EXIT_FAILURE;
+      }
+      KV_STR("IMAGE_FILE", output_file);
+      KV_DBL("T_SAVE_IMAGE_S", wtime() - t_img0);
+   } else {
+      KV_STR("IMAGE_FILE", "none");
    }
-   double t_img1 = wtime();
-   printf("Imagem salva em      : %s (%.6f s)\n", output_file, t_img1 - t_img0);
 
    // ---- Cleanup ----
    free(h_iters);
    free(source);
-   clReleaseMemObject(d_iters);
-   clReleaseKernel(kernel);
-   clReleaseProgram(program);
-   clReleaseCommandQueue(queue);
-   clReleaseContext(context);
+   err = clReleaseEvent(ev_kernel);          checkError(err, "clReleaseEvent(kernel)");
+   err = clReleaseEvent(ev_read);            checkError(err, "clReleaseEvent(read)");
+   err = clReleaseMemObject(d_iters);        checkError(err, "clReleaseMemObject");
+   err = clReleaseKernel(kernel);            checkError(err, "clReleaseKernel");
+   err = clReleaseProgram(program);          checkError(err, "clReleaseProgram");
+   err = clReleaseCommandQueue(queue);       checkError(err, "clReleaseCommandQueue");
+   err = clReleaseContext(context);          checkError(err, "clReleaseContext");
 
    return EXIT_SUCCESS;
 }
