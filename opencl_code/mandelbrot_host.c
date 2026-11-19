@@ -2,7 +2,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include <time.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <CL/cl.h>
 #include "err_code.h"
 
@@ -10,6 +14,7 @@
 #define DEFAULT_HEIGHT    18432
 #define DEFAULT_MAX_ITER  1500
 #define DEFAULT_LOCAL     16
+#define DEFAULT_OUTPUT    "opencl_images/mandelbrot_opencl.pgm"
 
 #define MIN_X (-2.0f)
 #define MAX_X ( 1.0f)
@@ -48,6 +53,81 @@ static char *load_kernel(const char *path)
    return buf;
 }
 
+// Garante que os diretorios pais de path existam
+static int ensure_parent_dir(const char *path)
+{
+   size_t len = strlen(path);
+   char *tmp = (char *)malloc(len + 1);
+   if (!tmp) return -1;
+   memcpy(tmp, path, len + 1);
+
+   for (char *p = tmp + 1; *p; p++) {
+      if (*p == '/') {
+         *p = '\0';
+         if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+            free(tmp);
+            return -1;
+         }
+         *p = '/';
+      }
+   }
+   free(tmp);
+   return 0;
+}
+
+// Salva a matriz de iteracoes em PGM (P5) usando tabela de lookup para os tons de cinza
+static int save_pgm(const char *path, const cl_ushort *iters,
+                    int width, int height, int max_iter)
+{
+   if (ensure_parent_dir(path) != 0) {
+      perror("Erro ao criar diretorio de saida");
+      return -1;
+   }
+
+   FILE *fp = fopen(path, "wb");
+   if (!fp) {
+      perror("Erro ao abrir arquivo PGM");
+      return -1;
+   }
+
+   unsigned char *lut = (unsigned char *)malloc((size_t)(max_iter + 1));
+   size_t row_bytes = (size_t)width;
+   unsigned char *row_buf = (unsigned char *)malloc(row_bytes);
+   if (!lut || !row_buf) {
+      printf("Erro: falha ao alocar buffers para gerar a imagem.\n");
+      free(lut);
+      free(row_buf);
+      fclose(fp);
+      return -1;
+   }
+
+   for (int i = 0; i < max_iter; i++) {
+      lut[i] = (unsigned char)(sinf(0.1f * i) * 127.5f + 127.5f);
+   }
+   lut[max_iter] = 0;
+
+   fprintf(fp, "P5\n%d %d\n255\n", width, height);
+
+   for (int py = 0; py < height; py++) {
+      const cl_ushort *row_iters = iters + (size_t)py * width;
+      for (int px = 0; px < width; px++) {
+         row_buf[px] = lut[row_iters[px]];
+      }
+      if (fwrite(row_buf, 1, row_bytes, fp) != row_bytes) {
+         perror("Erro ao escrever arquivo PGM");
+         free(lut);
+         free(row_buf);
+         fclose(fp);
+         return -1;
+      }
+   }
+
+   free(lut);
+   free(row_buf);
+   fclose(fp);
+   return 0;
+}
+
 int main(int argc, char **argv)
 {
    cl_int err;
@@ -56,6 +136,7 @@ int main(int argc, char **argv)
    int height   = DEFAULT_HEIGHT;
    int max_iter = DEFAULT_MAX_ITER;
    size_t local[2] = { DEFAULT_LOCAL, DEFAULT_LOCAL };
+   const char *output_file = DEFAULT_OUTPUT;
 
    if (argc >= 4) {
       width    = atoi(argv[1]);
@@ -65,6 +146,9 @@ int main(int argc, char **argv)
    if (argc >= 6) {
       local[0] = (size_t)atoi(argv[4]);
       local[1] = (size_t)atoi(argv[5]);
+   }
+   if (argc >= 7) {
+      output_file = argv[6];
    }
    if (width <= 0 || height <= 0 || max_iter <= 0 || max_iter > 65535 ||
        local[0] == 0 || local[1] == 0) {
@@ -191,6 +275,20 @@ int main(int argc, char **argv)
    printf("Total de iteracoes   : %llu\n", total);
    printf("Desempenho           : %.2f GFLOPS (8 FLOP/iteracao)\n",
           (double)total * 8.0 / time_kernel / 1e9);
+
+   double t_img0 = wtime();
+   if (save_pgm(output_file, h_iters, width, height, max_iter) != 0) {
+      free(h_iters);
+      free(source);
+      clReleaseMemObject(d_iters);
+      clReleaseKernel(kernel);
+      clReleaseProgram(program);
+      clReleaseCommandQueue(queue);
+      clReleaseContext(context);
+      return EXIT_FAILURE;
+   }
+   double t_img1 = wtime();
+   printf("Imagem salva em      : %s (%.6f s)\n", output_file, t_img1 - t_img0);
 
    // ---- Cleanup ----
    free(h_iters);

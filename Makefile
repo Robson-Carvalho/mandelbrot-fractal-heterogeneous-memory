@@ -53,7 +53,7 @@ $(SERIAL_TARGET): $(SERIAL_SRCS) $(SERIAL_HDRS)
 	$(CC) $(CFLAGS) $(SERIAL_SRCS) $(LIBS_MATH) -o $@
 
 $(OPENCL_TARGET): $(OPENCL_SRCS) $(OPENCL_HDRS) $(OPENCL_KERNEL)
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPENCL_SRCS) -o $@ $(LIBS_OPENCL)
+	$(CC) $(CFLAGS) $(INCLUDES) $(OPENCL_SRCS) -o $@ $(LIBS_OPENCL) $(LIBS_MATH)
 
 $(UTILS_TARGET): $(UTILS_SRCS)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LIBS_OPENCL)
@@ -65,8 +65,8 @@ run: build
 test: build
 	./run_serial.sh --quick
 
-# Argumentos opcionais: make run-opencl ARGS="24576 18432 1500 16 8"
-#                              (width height max_iter local_x local_y)
+# Argumentos opcionais: make run-opencl ARGS="24576 18432 1500 16 8 opencl_images/out.pgm"
+#                              (width height max_iter local_x local_y [output])
 ARGS ?=
 
 run-opencl: opencl
