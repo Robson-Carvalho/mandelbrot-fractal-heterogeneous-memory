@@ -36,6 +36,14 @@
 #define KERNEL_FILE "opencl_code/mandelbrot_kernel.cl"
 #endif
 
+// Extensoes NVIDIA de clGetDeviceInfo (usadas no calculo de ocupacao)
+#ifndef CL_DEVICE_COMPUTE_CAPABILITY_MAJOR_NV
+#define CL_DEVICE_COMPUTE_CAPABILITY_MAJOR_NV 0x4000
+#define CL_DEVICE_COMPUTE_CAPABILITY_MINOR_NV 0x4001
+#define CL_DEVICE_REGISTERS_PER_BLOCK_NV      0x4002
+#define CL_DEVICE_WARP_SIZE_NV                0x4003
+#endif
+
 static double wtime(void)
 {
    struct timespec t;
@@ -141,6 +149,27 @@ static int save_pgm(const char *path, const cl_ushort *iters,
    return 0;
 }
 
+// Grava a matriz de iteracoes crua (ushort, linha a linha) para validacao contra o serial
+static int save_raw(const char *path, const cl_ushort *iters, size_t n)
+{
+   if (ensure_parent_dir(path) != 0) {
+      perror("Erro ao criar diretorio de saida");
+      return -1;
+   }
+   FILE *fp = fopen(path, "wb");
+   if (!fp) {
+      perror("Erro ao abrir arquivo de saida");
+      return -1;
+   }
+   size_t w = fwrite(iters, sizeof(cl_ushort), n, fp);
+   fclose(fp);
+   if (w != n) {
+      perror("Erro ao escrever arquivo de saida");
+      return -1;
+   }
+   return 0;
+}
+
 // Duracao (ns) de um evento OpenCL: END - START
 static double event_ns(cl_event ev, const char *msg)
 {
@@ -163,7 +192,7 @@ int main(int argc, char **argv)
    size_t local[2] = { DEFAULT_LOCAL, DEFAULT_LOCAL };
    const char *output_file = DEFAULT_OUTPUT;
 
-   // Uso: ./mandelbrot_opencl [width height max_iter [local_x local_y [saida.pgm | none]]]
+   // Uso: ./mandelbrot_opencl [width height max_iter [local_x local_y [saida.pgm | saida.bin | none]]]
    if (argc >= 4) {
       width    = atoi(argv[1]);
       height   = atoi(argv[2]);
@@ -206,6 +235,8 @@ int main(int argc, char **argv)
       return EXIT_FAILURE;
    }
 
+   double t_platform = wtime();
+
    // ---- Informacoes do dispositivo ----
    char dev_name[256], plat_name[256], dev_ver[256];
    cl_uint compute_units = 0;
@@ -232,12 +263,21 @@ int main(int argc, char **argv)
    err = clGetDeviceInfo(device, CL_DEVICE_MAX_MEM_ALLOC_SIZE, sizeof(max_alloc), &max_alloc, NULL);
    checkError(err, "clGetDeviceInfo(CL_DEVICE_MAX_MEM_ALLOC_SIZE)");
 
+   // Extensoes NVIDIA (ignora erro em outros fabricantes; -1 = indisponivel)
+   cl_int nv_cc_major = -1, nv_cc_minor = -1, nv_regs_block = -1, nv_warp = -1;
+   if (clGetDeviceInfo(device, CL_DEVICE_COMPUTE_CAPABILITY_MAJOR_NV, sizeof(cl_uint), &nv_cc_major, NULL) != CL_SUCCESS) nv_cc_major = -1;
+   if (clGetDeviceInfo(device, CL_DEVICE_COMPUTE_CAPABILITY_MINOR_NV, sizeof(cl_uint), &nv_cc_minor, NULL) != CL_SUCCESS) nv_cc_minor = -1;
+   if (clGetDeviceInfo(device, CL_DEVICE_REGISTERS_PER_BLOCK_NV, sizeof(cl_uint), &nv_regs_block, NULL) != CL_SUCCESS) nv_regs_block = -1;
+   if (clGetDeviceInfo(device, CL_DEVICE_WARP_SIZE_NV, sizeof(cl_uint), &nv_warp, NULL) != CL_SUCCESS) nv_warp = -1;
+
    // ---- Contexto e fila de comandos (com profiling) ----
    cl_context context = clCreateContext(0, 1, &device, NULL, NULL, &err);
    checkError(err, "clCreateContext");
 
    cl_command_queue queue = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &err);
    checkError(err, "clCreateCommandQueue");
+
+   double t_ctx = wtime();
 
    // ---- Carrega, compila e cria o kernel ----
    char *source = load_kernel(KERNEL_FILE);
@@ -249,16 +289,29 @@ int main(int argc, char **argv)
    cl_program program = clCreateProgramWithSource(context, 1, (const char **)&source, NULL, &err);
    checkError(err, "clCreateProgramWithSource");
 
-   err = clBuildProgram(program, 1, &device, "-cl-fp32-correctly-rounded-divide-sqrt", NULL, NULL);
+   // Em NVIDIA, -cl-nv-verbose faz o log de build trazer a saida do ptxas (registradores usados)
+   int is_nvidia = (strstr(plat_name, "NVIDIA") != NULL);
+   char build_opts[256];
+   snprintf(build_opts, sizeof(build_opts), "-cl-fp32-correctly-rounded-divide-sqrt%s",
+            is_nvidia ? " -cl-nv-verbose" : "");
+
+   err = clBuildProgram(program, 1, &device, build_opts, NULL, NULL);
+   static char build_log[16384];
+   build_log[0] = '\0';
+   clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, sizeof(build_log), build_log, NULL);
    if (err != CL_SUCCESS) {
-      char log[8192];
-      clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, sizeof(log), log, NULL);
-      printf("Erro ao compilar o kernel:\n%s\n", log);
+      printf("Erro ao compilar o kernel:\n%s\n", build_log);
    }
    checkError(err, "clBuildProgram");
 
+   // Registradores por thread (so disponivel em NVIDIA via log do ptxas; -1 = desconhecido)
+   int kernel_regs = -1;
+   const char *used = strstr(build_log, "Used ");
+   if (used && sscanf(used, "Used %d registers", &kernel_regs) != 1) kernel_regs = -1;
+
    cl_kernel kernel = clCreateKernel(program, "mandelbrot", &err);
    checkError(err, "clCreateKernel");
+   double t_build = wtime();
 
    // ---- Limites do kernel ----
    size_t k_max_wg = 0, k_pref_mult = 0;
@@ -272,10 +325,13 @@ int main(int argc, char **argv)
    err = clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_PRIVATE_MEM_SIZE, sizeof(k_private_mem), &k_private_mem, NULL);
    checkError(err, "clGetKernelWorkGroupInfo(CL_KERNEL_PRIVATE_MEM_SIZE)");
 
+   // O limite real e o do dispositivo. CL_KERNEL_WORK_GROUP_SIZE e uma estimativa do driver
+   // (na NVIDIA reporta 256 mesmo com 14 registradores); se o driver recusar o lancamento,
+   // clEnqueueNDRangeKernel devolve CL_INVALID_WORK_GROUP_SIZE e o checkError aborta.
    size_t wg_items = local[0] * local[1];
-   if (wg_items > k_max_wg) {
-      printf("Erro: local %zux%zu = %zu work-items, maximo deste kernel = %zu.\n",
-             local[0], local[1], wg_items, k_max_wg);
+   if (wg_items > max_wg_dev || local[0] > max_item_sizes[0] || local[1] > max_item_sizes[1]) {
+      printf("Erro: local %zux%zu = %zu work-items excede o limite do dispositivo (%zu; por dimensao %zu x %zu).\n",
+             local[0], local[1], wg_items, max_wg_dev, max_item_sizes[0], max_item_sizes[1]);
       return EXIT_FAILURE;
    }
 
@@ -370,6 +426,11 @@ int main(int argc, char **argv)
    KV_INT("KERNEL_PREFERRED_WG_MULTIPLE", k_pref_mult);
    KV_ULL("KERNEL_LOCAL_MEM_SIZE_BYTES", k_local_mem);
    KV_ULL("KERNEL_PRIVATE_MEM_SIZE_BYTES", k_private_mem);
+   KV_INT("KERNEL_REGISTERS", kernel_regs);
+   KV_INT("NV_COMPUTE_CAPABILITY_MAJOR", nv_cc_major);
+   KV_INT("NV_COMPUTE_CAPABILITY_MINOR", nv_cc_minor);
+   KV_INT("NV_REGISTERS_PER_BLOCK", nv_regs_block);
+   KV_INT("NV_WARP_SIZE", nv_warp);
 
    KV_INT("WIDTH", width);
    KV_INT("HEIGHT", height);
@@ -382,6 +443,10 @@ int main(int argc, char **argv)
    KV_INT("GLOBAL_Y", global[1]);
 
    KV_DBL("T_SETUP_S", t_setup);
+   KV_DBL("T_SETUP_PLATFORM_S", t_platform - t_start);   // clGetPlatformIDs/clGetDeviceIDs (init do driver)
+   KV_DBL("T_SETUP_CONTEXT_S", t_ctx - t_platform);      // info do device + contexto + fila
+   KV_DBL("T_SETUP_BUILD_S", t_build - t_ctx);           // compilacao do kernel
+   KV_DBL("T_SETUP_BUFFERS_S", t_setup_end - t_build);   // buffer no device + malloc no host
    KV_DBL("T_WRITE_HTOD_S", 0.0);   // Mandelbrot nao tem dados de entrada
    KV_DBL("T_WARMUP_S", t_warm);
    KV_DBL("T_KERNEL_NS", kernel_ns);
@@ -403,7 +468,11 @@ int main(int argc, char **argv)
    // ---- Imagem (opcional, fora do T_total) ----
    if (save_image) {
       double t_img0 = wtime();
-      if (save_pgm(output_file, h_iters, width, height, max_iter) != 0) {
+      size_t olen = strlen(output_file);
+      int as_raw = (olen > 4 && strcmp(output_file + olen - 4, ".bin") == 0);
+      int rc = as_raw ? save_raw(output_file, h_iters, n_pixels)
+                      : save_pgm(output_file, h_iters, width, height, max_iter);
+      if (rc != 0) {
          return EXIT_FAILURE;
       }
       KV_STR("IMAGE_FILE", output_file);
