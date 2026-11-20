@@ -8,22 +8,29 @@
 #   bash/run_opencl.sh --quick         # teste rápido (imagem pequena, poucas execuções)
 #
 # Experimentos:
+#   validate  compara a saída do OpenCL com o serial, pixel a pixel (utils/validate.c)
 #   baseline  config padrão (local 16x16), RUNS execuções, com /usr/bin/time -v
 #   local     varre o tamanho do work-group (32..512 work-items, várias formas X x Y)
 #   size      varre o tamanho da imagem (escala N) com o local fixo -> curva de escala
+#   serial_size  roda o serial nos mesmos tamanhos do "size" -> ponto de crossover CPU x GPU
 #   monitor   roda com MAX_ITER alto para o nvidia-smi dmon conseguir amostrar a GPU
+#   (sempre roda antes uma sondagem de 1 execução com o cache do driver desligado,
+#    para obter os registradores por thread do kernel -> ocupação teórica)
 #
 # Variáveis de ambiente (opcionais):
 #   WIDTH HEIGHT MAX_ITER     problema base           (24576 18432 1500)
 #   RUNS                      execuções por config    (3)
 #   LOCAL_X LOCAL_Y           local usado em baseline/size/monitor (16 16)
 #   LOCAL_SHAPES              formas do experimento "local", ex: "32x8 16x16"
-#   SIZE_DIVISORS             divisores de WIDTH/HEIGHT no "size" (64 32 16 8 4 2 1)
+#   SIZE_DIVISORS             divisores de WIDTH/HEIGHT no "size" (512 256 ... 2 1)
+#   SERIAL_DIVISORS           divisores do "serial_size" (512 256 ... 2; o tamanho cheio
+#                             do serial já está em results/<host>/serial/)
+#   VALIDATE_CASES            casos do "validate": WxHxITER:LXxLY ...
 #   MONITOR_MAX_ITER          MAX_ITER do "monitor"   (12000)
 #   VERSION                   rotulo da versao do kernel: naive, coalesced, ... (naive)
 #                             Troque ao testar uma otimizacao: os resultados nunca se misturam.
 #   CODE_DIR                  diretorio do codigo OpenCL (opencl_code | opencl_code_optimized)
-#                             O codigo usado e copiado para <saida>/code/ junto dos resultados.
+#                             O meta.txt registra o commit e o sha256 do kernel e do host usados.
 #
 # Saída: results/<hostname>/opencl/<VERSION>_<AAAAMMDD-HHMMSS>/   (uma pasta por execucao)
 #   raw.csv      uma linha por execução
@@ -44,13 +51,13 @@ EXPERIMENTS=()
 for a in "$@"; do
     case "$a" in
         --quick|-q) QUICK=1 ;;
-        baseline|local|size|monitor) EXPERIMENTS+=("$a") ;;
-        all) EXPERIMENTS=(baseline local size monitor) ;;
-        -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        validate|baseline|local|size|serial_size|monitor) EXPERIMENTS+=("$a") ;;
+        all) EXPERIMENTS=(validate baseline local size serial_size monitor) ;;
+        -h|--help) sed -n '2,46p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "Argumento desconhecido: $a (use --help)"; exit 1 ;;
     esac
 done
-[ ${#EXPERIMENTS[@]} -eq 0 ] && EXPERIMENTS=(baseline local size monitor)
+[ ${#EXPERIMENTS[@]} -eq 0 ] && EXPERIMENTS=(validate baseline local size serial_size monitor)
 
 # ------------------------------------------------------------------ config ----
 if [ "$QUICK" -eq 1 ]; then
@@ -63,7 +70,9 @@ fi
 LOCAL_X=${LOCAL_X:-16}
 LOCAL_Y=${LOCAL_Y:-16}
 LOCAL_SHAPES=${LOCAL_SHAPES:-"32x1 16x2 8x4  64x1 32x2 16x4 8x8  128x1 32x4 16x8  256x1 64x4 32x8 16x16  512x1 64x8 32x16"}
-SIZE_DIVISORS=${SIZE_DIVISORS:-"64 32 16 8 4 2 1"}
+SIZE_DIVISORS=${SIZE_DIVISORS:-"512 256 128 64 32 16 8 4 2 1"}
+SERIAL_DIVISORS=${SERIAL_DIVISORS:-"512 256 128 64 32 16 8 4 2"}
+VALIDATE_CASES=${VALIDATE_CASES:-"1000x1000x200:16x16 1024x768x1500:32x8 512x384x1500:512x1 700x500x300:64x8 513x257x1000:32x16 640x480x1500:256x1"}
 
 HOST_NAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)
 VERSION=${VERSION:-naive}
@@ -89,12 +98,11 @@ mkdir -p "$LOG_DIR"
 echo "=========================================================="
 echo "  MANDELBROT OPENCL (ingênuo) - EXPERIMENTOS  [$HOST_NAME]"
 echo "=========================================================="
-echo ">>> Compilando (make opencl)..."
-make opencl OPENCL_DIR="$CODE_DIR" OPENCL_TARGET="${BINARY#./}" || { echo "ERRO: falha na compilacao"; exit 1; }
+echo ">>> Compilando (make opencl, serial e validador)..."
+make opencl OPENCL_DIR="$CODE_DIR" OPENCL_TARGET="${BINARY#./}" || { echo "ERRO: falha na compilacao (opencl)"; exit 1; }
+make build validate-build || { echo "ERRO: falha na compilacao (serial/validador)"; exit 1; }
 
 # ----------------------------------------------------------------- ambiente ---
-mkdir -p "$OUT_DIR/code"
-cp "$CODE_DIR"/mandelbrot_kernel.cl "$CODE_DIR"/mandelbrot_host.c "$OUT_DIR/code/" 2>/dev/null
 echo ">>> Coletando informacoes do ambiente em $OUT_DIR"
 lscpu > "$OUT_DIR/lscpu.txt" 2>&1
 if command -v clinfo >/dev/null 2>&1; then clinfo > "$OUT_DIR/clinfo.txt" 2>&1
@@ -111,8 +119,11 @@ else echo "(aviso) nvidia-smi nao encontrado"; fi
     echo "host: $HOST_NAME"
     echo "version: $VERSION"
     echo "code_dir: $CODE_DIR"
-    echo "git_commit: $(git rev-parse --short HEAD 2>/dev/null || echo n/a)"
-    echo "git_dirty: $(git status --porcelain 2>/dev/null | wc -l) arquivo(s) modificados"
+    # no remoto nao ha .git: o Makefile repassa GIT_COMMIT/GIT_DIRTY do computador local
+    echo "git_commit: ${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo n/a)}"
+    echo "git_dirty: ${GIT_DIRTY:-$(git status --porcelain 2>/dev/null | wc -l)} arquivo(s) modificados"
+    echo "kernel_sha256: $(sha256sum "$CODE_DIR/mandelbrot_kernel.cl" | cut -c1-16)"
+    echo "host_sha256: $(sha256sum "$CODE_DIR/mandelbrot_host.c" | cut -c1-16)"
     echo "gcc: $(gcc --version | head -n1)"
     echo "experiments: ${EXPERIMENTS[*]}"
     echo "quick: $QUICK"
@@ -120,6 +131,8 @@ else echo "(aviso) nvidia-smi nao encontrado"; fi
     echo "runs: $RUNS"; echo "local_default: ${LOCAL_X}x${LOCAL_Y}"
     echo "local_shapes: $LOCAL_SHAPES"
     echo "size_divisors: $SIZE_DIVISORS"
+    echo "serial_divisors: $SERIAL_DIVISORS"
+    echo "validate_cases: $VALIDATE_CASES"
     echo "monitor_max_iter: $MONITOR_MAX_ITER"
 } > "$OUT_DIR/meta.txt"
 
@@ -127,7 +140,8 @@ else echo "(aviso) nvidia-smi nao encontrado"; fi
 COLS="experiment,label,run,width,height,max_iter,local_x,local_y,wg_items,status,\
 t_setup_s,t_kernel_s,t_kernel_wall_s,t_read_dtoh_s,t_total_s,t_total_minus_kernel_s,\
 total_iterations,bandwidth_gbs,bandwidth_pct_peak,gflops,gflops_pct_peak,\
-wall_s,user_s,sys_s,max_rss_kb"
+wall_s,user_s,sys_s,max_rss_kb,\
+t_setup_platform_s,t_setup_context_s,t_setup_build_s,t_setup_buffers_s"
 echo "$COLS" | tr -d '\\\n ' > "$RAW_CSV"; echo >> "$RAW_CSV"
 
 # kv <chave> <arquivo>: valor de uma linha "CHAVE: valor"
@@ -154,7 +168,7 @@ run_one() {
     if [ $rc -ne 0 ] || ! grep -q '^T_TOTAL_S:' "$log"; then
         local msg; msg=$(head -n1 "$log" | tr ',' ';')
         printf '    [%s %s run %s] FALHOU (rc=%s): %s\n' "$exp" "$label" "$run" "$rc" "$msg"
-        echo "$exp,$label,$run,$w,$h,$iter,$lx,$ly,$((lx*ly)),FAILED,,,,,,,,,,,,,,," >> "$RAW_CSV"
+        echo "$exp,$label,$run,$w,$h,$iter,$lx,$ly,$((lx*ly)),FAILED,,,,,,,,,,,,,,,,,,," >> "$RAW_CSV"
         return
     fi
 
@@ -168,7 +182,8 @@ run_one() {
 $(kv T_SETUP_S "$log"),$(kv T_KERNEL_S "$log"),$(kv T_KERNEL_WALL_S "$log"),$(kv T_READ_DTOH_S "$log"),\
 $(kv T_TOTAL_S "$log"),$(kv T_TOTAL_MINUS_KERNEL_S "$log"),$(kv TOTAL_ITERATIONS "$log"),\
 $(kv BANDWIDTH_GBS "$log"),$(kv BANDWIDTH_PCT_PEAK "$log"),$(kv GFLOPS "$log"),$(kv GFLOPS_PCT_PEAK "$log"),\
-$wall,$user,$sys,$rss" >> "$RAW_CSV"
+$wall,$user,$sys,$rss,\
+$(kv T_SETUP_PLATFORM_S "$log"),$(kv T_SETUP_CONTEXT_S "$log"),$(kv T_SETUP_BUILD_S "$log"),$(kv T_SETUP_BUFFERS_S "$log")" >> "$RAW_CSV"
 
     printf '    [%s %s run %s] kernel=%ss total=%ss GFLOPS=%s wall=%ss rss=%sKB\n' \
         "$exp" "$label" "$run" "$(kv T_KERNEL_S "$log")" "$(kv T_TOTAL_S "$log")" \
@@ -201,6 +216,54 @@ exp_size() {
     done
 }
 
+# Compara a saida do OpenCL com a do serial (pixel a pixel). Falha se houver divergencia.
+exp_validate() {
+    local vfile="$OUT_DIR/validation.txt" tmp="$OUT_DIR/.validate_tmp.bin" fails=0
+    : > "$vfile"
+    echo ">>> [validate] OpenCL x serial (pixel a pixel)"
+    for c in $VALIDATE_CASES; do
+        local dims=${c%%:*} loc=${c##*:}
+        local w=${dims%%x*}; local rest=${dims#*x}; local h=${rest%%x*}; local it=${rest#*x}
+        local lx=${loc%x*} ly=${loc#*x}
+        echo "# caso: ${w}x${h} iter=$it local=${lx}x${ly}" >> "$vfile"
+        if ! "$BINARY" "$w" "$h" "$it" "$lx" "$ly" "$tmp" > "$LOG_DIR/validate_${w}x${h}_${lx}x${ly}.log" 2>&1; then
+            echo "VALIDATE_RESULT: FAIL (execucao do OpenCL falhou)" >> "$vfile"
+            printf '    %sx%s iter=%s local %sx%s : FALHOU (OpenCL nao executou)\n' "$w" "$h" "$it" "$lx" "$ly"
+            fails=$((fails+1)); continue
+        fi
+        ./utils/validate "$w" "$h" "$it" "$tmp" >> "$vfile" 2>&1
+        local res; res=$(tail -n1 "$vfile")
+        printf '    %sx%s iter=%s local %sx%s : %s\n' "$w" "$h" "$it" "$lx" "$ly" "${res#VALIDATE_RESULT: }"
+        case "$res" in *OK*) ;; *) fails=$((fails+1)) ;; esac
+    done
+    rm -f "$tmp"
+    if [ "$fails" -gt 0 ]; then
+        echo "    ATENCAO: $fails caso(s) divergiram do serial. Veja $vfile"
+    else
+        echo "    Todos os casos identicos ao serial."
+    fi
+}
+
+# Serial nos mesmos tamanhos do "size" (para achar o crossover CPU x GPU)
+exp_serial_size() {
+    local csv="$OUT_DIR/serial_sizes.csv"
+    echo "divisor,width,height,run,time_s,total_iterations" > "$csv"
+    for d in $SERIAL_DIVISORS; do
+        local w=$((WIDTH / d)) h=$((HEIGHT / d))
+        [ "$w" -lt 1 ] && w=1; [ "$h" -lt 1 ] && h=1
+        echo ">>> [serial_size] ${w}x${h}  (iter=$MAX_ITER, $RUNS execucoes)"
+        for r in $(seq 1 "$RUNS"); do
+            local log="$LOG_DIR/serial_size_${w}x${h}_run${r}.log"
+            ./serial "$w" "$h" -2.0 1.0 -1.5 1.5 "$MAX_ITER" /dev/null > "$log" 2>&1
+            local t it
+            t=$(grep "Tempo de processamento (clock_gettime):" "$log" | awk '{print $5}')
+            it=$(grep "Total de iteracoes somadas:" "$log" | awk '{print $5}')
+            echo "$d,$w,$h,$r,$t,$it" >> "$csv"
+            printf '    [serial %sx%s run %s] %ss\n' "$w" "$h" "$r" "$t"
+        done
+    done
+}
+
 exp_monitor() {
     if [ "$HAS_SMI" -ne 1 ]; then
         echo ">>> [monitor] pulado: nvidia-smi indisponivel"; return
@@ -221,12 +284,20 @@ exp_monitor() {
     echo "    amostras: $fast"
 }
 
+# Sondagem: 1 execucao pequena com o cache de compilacao do driver desligado. Com o cache
+# ligado o log do ptxas (que traz o numero de registradores) vem vazio.
+echo ">>> Sondagem do kernel (registradores por thread)"
+CUDA_CACHE_DISABLE=1 "$BINARY" 256 256 100 "$LOCAL_X" "$LOCAL_Y" none > "$LOG_DIR/probe.log" 2>&1
+echo "    KERNEL_REGISTERS: $(kv KERNEL_REGISTERS "$LOG_DIR/probe.log")"
+
 for e in "${EXPERIMENTS[@]}"; do
     case "$e" in
-        baseline) exp_baseline ;;
-        local)    exp_local ;;
-        size)     exp_size ;;
-        monitor)  exp_monitor ;;
+        validate)    exp_validate ;;
+        baseline)    exp_baseline ;;
+        local)       exp_local ;;
+        size)        exp_size ;;
+        serial_size) exp_serial_size ;;
+        monitor)     exp_monitor ;;
     esac
 done
 
