@@ -1,0 +1,19 @@
+date: 2026-11-19T23:30:24-03:00
+host: LOQ
+version: naive
+code_dir: opencl_code
+git_commit: 09eb287
+git_dirty: 6 arquivo(s) modificados
+gcc: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+experiments: validate baseline local size serial_size monitor
+quick: 0
+width: 24576
+height: 18432
+max_iter: 1500
+runs: 3
+local_default: 16x16
+local_shapes: 32x1 16x2 8x4  64x1 32x2 16x4 8x8  128x1 32x4 16x8  256x1 64x4 32x8 16x16  512x1 64x8 32x16
+size_divisors: 512 256 128 64 32 16 8 4 2 1
+serial_divisors: 512 256 128 64 32 16 8 4 2
+validate_cases: 1000x1000x200:16x16 1024x768x1500:32x8 512x384x1500:512x1 700x500x300:64x8 513x257x1000:32x16 640x480x1500:256x1
+monitor_max_iter: 12000
