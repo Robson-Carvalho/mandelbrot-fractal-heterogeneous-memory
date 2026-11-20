@@ -1,9 +1,14 @@
-serial
+/serial
 mandelbrot_opencl
+mandelbrot_opencl_*
 results/*/*.log
+results/*/serial/*/*.log
 results/*/*.bin
+.local
+opencl_images
 *.o
 *.ppm
+*.pgm
 /local
 
 utils/*
