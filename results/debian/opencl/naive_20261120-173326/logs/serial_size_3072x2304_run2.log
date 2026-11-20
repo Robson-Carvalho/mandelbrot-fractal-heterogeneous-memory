@@ -1,0 +1,10 @@
+width: 3072
+height: 2304
+minX: -2.000000
+maxX: 1.000000
+minY: -1.500000
+maxY: 1.500000
+max_iter: 1500
+Salvando imagem em: /dev/null
+Tempo de processamento (clock_gettime): 5.432852 segundos
+Total de iteracoes somadas: 1816323272
