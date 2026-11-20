@@ -2,11 +2,14 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"   # caminhos (serial_c_code/, results/) sao relativos a raiz do projeto
 
 HOST_NAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')
 RESULTS_DIR="results"
-HOST_RESULTS_DIR="$RESULTS_DIR/$HOST_NAME"
+STAMP=$(date +%Y%m%d-%H%M%S)
+# uma pasta por execucao: results/<host>/serial/<data-hora>/ (nunca sobrescreve)
+HOST_RESULTS_DIR="$RESULTS_DIR/$HOST_NAME/serial/$STAMP"
 mkdir -p "$HOST_RESULTS_DIR"
 
 DEFAULT_WIDTH=24576
