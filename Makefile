@@ -20,11 +20,13 @@ SERIAL_HDRS   = $(SERIAL_DIR)/mandelbrot.h \
 SERIAL_TARGET = serial
 
 # 2. Projeto OpenCL (Mandelbrot paralelo)
-OPENCL_DIR    = opencl_code
+# OPENCL_DIR escolhe a versao do codigo: opencl_code (ingenua) ou opencl_code_optimized.
+# OPENCL_TARGET e o nome do binario (um por versao, para nao sobrescrever).
+OPENCL_DIR    ?= opencl_code
 OPENCL_SRCS   = $(OPENCL_DIR)/mandelbrot_host.c
 OPENCL_HDRS   = $(OPENCL_DIR)/err_code.h
 OPENCL_KERNEL = $(OPENCL_DIR)/mandelbrot_kernel.cl
-OPENCL_TARGET = mandelbrot_opencl
+OPENCL_TARGET ?= mandelbrot_opencl
 
 # 3. Utilitários (OpenCL Inspector)
 UTILS_DIR     = utils
@@ -34,7 +36,8 @@ UTILS_TARGET  = $(UTILS_DIR)/plataform
 # ==============================================================================
 # Alvos e Regras do Make
 # ==============================================================================
-.PHONY: all build opencl utils plataform run test run-opencl test-opencl clean help
+.PHONY: all build opencl utils plataform run test run-opencl test-opencl clean help \
+        experiments check-remote remote-sync remote-run remote-pull remote-all
 
 # Alvo padrão
 all: build opencl utils
@@ -53,17 +56,17 @@ $(SERIAL_TARGET): $(SERIAL_SRCS) $(SERIAL_HDRS)
 	$(CC) $(CFLAGS) $(SERIAL_SRCS) $(LIBS_MATH) -o $@
 
 $(OPENCL_TARGET): $(OPENCL_SRCS) $(OPENCL_HDRS) $(OPENCL_KERNEL)
-	$(CC) $(CFLAGS) $(INCLUDES) $(OPENCL_SRCS) -o $@ $(LIBS_OPENCL) $(LIBS_MATH)
+	$(CC) $(CFLAGS) $(INCLUDES) -DKERNEL_FILE='"$(OPENCL_KERNEL)"' $(OPENCL_SRCS) -o $@ $(LIBS_OPENCL) $(LIBS_MATH)
 
 $(UTILS_TARGET): $(UTILS_SRCS)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LIBS_OPENCL)
 
 # --- Execução e Testes ---
 run: build
-	./run_serial.sh
+	./bash/run_serial.sh
 
 test: build
-	./run_serial.sh --quick
+	./bash/run_serial.sh --quick
 
 # Argumentos opcionais: make run-opencl ARGS="24576 18432 1500 16 8 opencl_images/out.pgm"
 #                              (width height max_iter local_x local_y [output])
@@ -75,10 +78,63 @@ run-opencl: opencl
 test-opencl: opencl
 	./$(OPENCL_TARGET) 1000 1000 200
 
+# ==============================================================================
+# Experimentos (local e remoto - colmeia4/TITAN)
+# ==============================================================================
+# Local:   make experiments [VERSION=naive] [RUN_ARGS="local size"]
+# Remoto:  make remote-all REMOTE_USER=grupoX
+#          (sincroniza codigo -> roda la -> traz so os resultados, sem imagens)
+#
+# Resultados: results/<host>/opencl/<VERSION>_<data-hora>/  (nunca sobrescreve)
+# A senha NAO fica no repositorio: o ssh pergunta uma vez (conexao reaproveitada
+# por 15 min via ControlMaster). Para nao digitar: ssh-copy-id -p PORTA user@host
+VERSION     ?= naive
+RUN_ARGS    ?=
+REMOTE_USER ?=
+REMOTE_HOST ?= lacad.uefs.br
+REMOTE_PORT ?= 8104
+REMOTE_DIR  ?= mandelbrot-fractal-heterogeneous-memory
+# script executado no remoto (ex.: REMOTE_SCRIPT=bash/run_serial.sh)
+REMOTE_SCRIPT ?= bash/run_opencl.sh
+CODE_DIR    ?= opencl_code
+
+REMOTE      = $(REMOTE_USER)@$(REMOTE_HOST)
+SSH_CMD     = ssh -p $(REMOTE_PORT) -o ControlMaster=auto -o ControlPersist=15m \
+              -o ControlPath=$(HOME)/.ssh/cm-mandelbrot-%C
+RSYNC       = rsync -az --info=stats1 -e "$(SSH_CMD)"
+# nunca enviar: historico git, resultados, imagens, binarios compilados
+PUSH_EXCL   = --exclude=.git --exclude=results/ --exclude=opencl_images/ \
+              --exclude='*.pgm' --exclude='*.ppm' --exclude=.local \
+              --exclude=/serial --exclude='mandelbrot_opencl*' --exclude=utils/plataform
+# nunca trazer imagens
+PULL_EXCL   = --exclude='*.pgm' --exclude='*.ppm'
+
+experiments:
+	VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) bash/run_opencl.sh $(RUN_ARGS)
+
+check-remote:
+	@test -n "$(REMOTE_USER)" || { echo "Defina o usuario: make <alvo> REMOTE_USER=grupoX"; exit 1; }
+	@mkdir -p $(HOME)/.ssh
+
+# Envia o codigo para o remoto (sem results, imagens e binarios; nao apaga nada la)
+remote-sync: check-remote
+	$(RSYNC) $(PUSH_EXCL) --rsync-path="mkdir -p $(REMOTE_DIR) && rsync" ./ $(REMOTE):$(REMOTE_DIR)/
+
+# Roda no remoto o mesmo comando do local (envia o codigo antes)
+remote-run: remote-sync
+	$(SSH_CMD) $(REMOTE) "cd $(REMOTE_DIR) && VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) $(REMOTE_SCRIPT) $(RUN_ARGS)"
+
+# Traz results/ do remoto (sem imagens). Pastas tem data-hora: nada e sobrescrito.
+remote-pull: check-remote
+	mkdir -p results
+	$(RSYNC) $(PULL_EXCL) $(REMOTE):$(REMOTE_DIR)/results/ results/
+
+remote-all: remote-run remote-pull
+
 # --- Limpeza ---
 clean:
 	rm -f $(SERIAL_TARGET)
-	rm -f $(OPENCL_TARGET)
+	rm -f mandelbrot_opencl mandelbrot_opencl_*
 	rm -f $(UTILS_TARGET)
 	rm -f results/*.log
 
@@ -97,6 +153,11 @@ help:
 	@echo "  make test       - Executa o benchmark rápido de validação (--quick)"
 	@echo "  make run-opencl - Executa o Mandelbrot OpenCL (use ARGS=\"w h iter lx ly\")"
 	@echo "  make test-opencl- Executa o OpenCL em tamanho reduzido (1000x1000, 200 iter)"
+	@echo "  make experiments  - Roda bash/run_opencl.sh local (VERSION=naive RUN_ARGS=\"local size\")"
+	@echo "  make remote-sync  - Envia o codigo ao remoto (REMOTE_USER=grupoX)"
+	@echo "  make remote-run   - remote-sync + roda os experimentos la"
+	@echo "  make remote-pull  - Traz results/ do remoto (sem imagens)"
+	@echo "  make remote-all   - remote-run + remote-pull"
 	@echo "  make clean      - Remove executáveis e logs temporários"
 	@echo "  make help       - Exibe esta mensagem de ajuda"
 	@echo "======================================================================"
