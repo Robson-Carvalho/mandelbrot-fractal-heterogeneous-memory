@@ -33,11 +33,15 @@ UTILS_DIR     = utils
 UTILS_SRCS    = $(UTILS_DIR)/plataform.c
 UTILS_TARGET  = $(UTILS_DIR)/plataform
 
+# 4. Validador (compara a saida do OpenCL com o serial, pixel a pixel)
+VALIDATE_SRC    = $(UTILS_DIR)/validate.c
+VALIDATE_TARGET = $(UTILS_DIR)/validate
+
 # ==============================================================================
 # Alvos e Regras do Make
 # ==============================================================================
 .PHONY: all build opencl utils plataform run test run-opencl test-opencl clean help \
-        experiments check-remote remote-sync remote-run remote-pull remote-all
+        experiments validate-build validate check-remote remote-sync remote-run remote-pull remote-all
 
 # Alvo padrão
 all: build opencl utils
@@ -57,6 +61,14 @@ $(SERIAL_TARGET): $(SERIAL_SRCS) $(SERIAL_HDRS)
 
 $(OPENCL_TARGET): $(OPENCL_SRCS) $(OPENCL_HDRS) $(OPENCL_KERNEL)
 	$(CC) $(CFLAGS) $(INCLUDES) -DKERNEL_FILE='"$(OPENCL_KERNEL)"' $(OPENCL_SRCS) -o $@ $(LIBS_OPENCL) $(LIBS_MATH)
+
+# O serial e compilado sem o main (-Dmain=...) para reaproveitar mandelbrot() como referencia
+$(VALIDATE_TARGET): $(VALIDATE_SRC) $(SERIAL_SRCS) $(SERIAL_HDRS)
+	$(CC) $(CFLAGS) -Dmain=serial_main_unused -c $(SERIAL_DIR)/image_generator.c -o $(UTILS_DIR)/image_generator_nomain.o
+	$(CC) $(CFLAGS) $(VALIDATE_SRC) $(UTILS_DIR)/image_generator_nomain.o \
+	      $(SERIAL_DIR)/mandelbrot.c $(SERIAL_DIR)/complex.c $(LIBS_MATH) -o $@
+
+validate-build: $(VALIDATE_TARGET)
 
 $(UTILS_TARGET): $(UTILS_SRCS)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LIBS_OPENCL)
@@ -97,6 +109,9 @@ REMOTE_DIR  ?= mandelbrot-fractal-heterogeneous-memory
 # script executado no remoto (ex.: REMOTE_SCRIPT=bash/run_serial.sh)
 REMOTE_SCRIPT ?= bash/run_opencl.sh
 CODE_DIR    ?= opencl_code
+# o remoto nao recebe o .git: o commit/estado local segue junto, para constar no meta.txt
+GIT_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo n/a)
+GIT_DIRTY   ?= $(shell git status --porcelain 2>/dev/null | wc -l)
 
 REMOTE      = $(REMOTE_USER)@$(REMOTE_HOST)
 SSH_CMD     = ssh -p $(REMOTE_PORT) -o ControlMaster=auto -o ControlPersist=15m \
@@ -105,9 +120,20 @@ RSYNC       = rsync -az --info=stats1 -e "$(SSH_CMD)"
 # nunca enviar: historico git, resultados, imagens, binarios compilados
 PUSH_EXCL   = --exclude=.git --exclude=results/ --exclude=opencl_images/ \
               --exclude='*.pgm' --exclude='*.ppm' --exclude=.local \
-              --exclude=/serial --exclude='mandelbrot_opencl*' --exclude=utils/plataform
+              --exclude=/serial --exclude='mandelbrot_opencl*' --exclude=utils/plataform \
+              --exclude=utils/validate --exclude='utils/*.o'
 # nunca trazer imagens
 PULL_EXCL   = --exclude='*.pgm' --exclude='*.ppm'
+
+# Valida o OpenCL contra o serial: make validate [W=1000 H=1000 ITER=200 LX=16 LY=16]
+W ?= 1000
+H ?= 1000
+ITER ?= 200
+LX ?= 16
+LY ?= 16
+validate: opencl $(VALIDATE_TARGET)
+	./$(OPENCL_TARGET) $(W) $(H) $(ITER) $(LX) $(LY) results/.validate.bin > /dev/null
+	./$(VALIDATE_TARGET) $(W) $(H) $(ITER) results/.validate.bin; rc=$$?; rm -f results/.validate.bin; exit $$rc
 
 experiments:
 	VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) bash/run_opencl.sh $(RUN_ARGS)
@@ -122,7 +148,7 @@ remote-sync: check-remote
 
 # Roda no remoto o mesmo comando do local (envia o codigo antes)
 remote-run: remote-sync
-	$(SSH_CMD) $(REMOTE) "cd $(REMOTE_DIR) && VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) $(REMOTE_SCRIPT) $(RUN_ARGS)"
+	$(SSH_CMD) $(REMOTE) "cd $(REMOTE_DIR) && GIT_COMMIT=$(GIT_COMMIT) GIT_DIRTY=$(GIT_DIRTY) VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) $(REMOTE_SCRIPT) $(RUN_ARGS)"
 
 # Traz results/ do remoto (sem imagens). Pastas tem data-hora: nada e sobrescrito.
 remote-pull: check-remote
@@ -135,7 +161,7 @@ remote-all: remote-run remote-pull
 clean:
 	rm -f $(SERIAL_TARGET)
 	rm -f mandelbrot_opencl mandelbrot_opencl_*
-	rm -f $(UTILS_TARGET)
+	rm -f $(UTILS_TARGET) $(VALIDATE_TARGET) $(UTILS_DIR)/image_generator_nomain.o
 	rm -f results/*.log
 
 # --- Ajuda ---
