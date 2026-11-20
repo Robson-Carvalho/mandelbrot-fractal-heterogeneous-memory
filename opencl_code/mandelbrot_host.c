@@ -31,7 +31,10 @@
 #define MIN_Y (-1.5f)
 #define MAX_Y ( 1.5f)
 
+// O Makefile passa -DKERNEL_FILE=... conforme o diretorio de codigo (OPENCL_DIR)
+#ifndef KERNEL_FILE
 #define KERNEL_FILE "opencl_code/mandelbrot_kernel.cl"
+#endif
 
 static double wtime(void)
 {
