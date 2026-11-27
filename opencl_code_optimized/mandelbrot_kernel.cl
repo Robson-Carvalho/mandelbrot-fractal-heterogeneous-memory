@@ -14,8 +14,23 @@ __kernel void mandelbrot(__global ushort *iters,
                          const float maxY,
                          const int max_iter)
 {
-    int px = get_global_id(0);
-    int py = get_global_id(1);
+    // OTIMIZACAO (divergencia de warp): remapeia qual pixel cada work-item
+    // calcula. Cada warp (32 work-items consecutivos em id linear) passa a cobrir
+    // um bloco compacto 8x4 de pixels vizinhos, que tendem a ter contagens de
+    // iteracao parecidas -> menos lanes ociosas esperando o mais lento do warp.
+    // Requer local_x multiplo de 8 e local_y multiplo de 4; senao usa o mapa padrao.
+    int lw = get_local_size(0), lh = get_local_size(1);
+    int lx = get_local_id(0),   ly = get_local_id(1);
+    if ((lw % 8) == 0 && (lh % 4) == 0) {
+        int lid   = ly * lw + lx;
+        int warp  = lid / 32;
+        int lane  = lid % 32;
+        int bpr   = lw / 8;                 // blocos 8x4 por linha da tile
+        lx = (warp % bpr) * 8 + (lane % 8);
+        ly = (warp / bpr) * 4 + (lane / 8);
+    }
+    int px = get_group_id(0) * lw + lx;
+    int py = get_group_id(1) * lh + ly;
 
     if (px >= width || py >= height) return;
 
