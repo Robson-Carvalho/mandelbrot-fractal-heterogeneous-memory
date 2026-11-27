@@ -1,1 +1,0 @@
-experiment,label,run,width,height,max_iter,local_x,local_y,wg_items,status,t_setup_s,t_kernel_s,t_kernel_wall_s,t_read_dtoh_s,t_total_s,t_total_minus_kernel_s,total_iterations,bandwidth_gbs,bandwidth_pct_peak,gflops,gflops_pct_peak,wall_s,user_s,sys_s,max_rss_kb,t_setup_platform_s,t_setup_context_s,t_setup_build_s,t_setup_buffers_s
