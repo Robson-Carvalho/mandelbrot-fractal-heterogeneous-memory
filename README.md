@@ -58,6 +58,66 @@ O script executa de forma 100% automatizada:
 
 ---
 
+## Versões do Código OpenCL
+
+Cada versão fica em uma pasta própria. Quem escolhe a versão é a variável `CODE_DIR` (e `VERSION` é só o rótulo da pasta de resultados).
+
+| Versão | Pasta (`CODE_DIR`) | O que muda |
+|---|---|---|
+| naive | `opencl_code` | Kernel ingênuo: 1 pixel por work-item, saída `ushort` (2 bytes/pixel) |
+| warp | `opencl_code_optimized_warp` | Remapeia os work-items para cada warp cobrir um bloco 8x4 de pixels vizinhos (menos divergência) |
+| memory_constant | `opencl_code_optimized_memory_constant` | Warp + LUT de cores em `__constant` e saída `uchar` (1 byte/pixel): metade da escrita na VRAM e do buffer lido via PCIe |
+
+> **Importante:** passe sempre `VERSION` e `CODE_DIR` juntos. Se esquecer o `CODE_DIR`, o script usa o código `naive` com o rótulo que você der.
+
+---
+
+## Rodando Cada Versão
+
+### Local
+
+```bash
+# naive
+make experiments VERSION=naive CODE_DIR=opencl_code
+# warp
+make experiments VERSION=warp CODE_DIR=opencl_code_optimized_warp
+# memory_constant
+make experiments VERSION=memory_constant CODE_DIR=opencl_code_optimized_memory_constant
+# serial (relatório em results/<host>/serial/<data-hora>/)
+make run
+```
+
+Para um teste rápido de qualquer versão, acrescente `RUN_ARGS="--quick"`.
+
+### Mudando o problema (ex.: 3000 iterações)
+
+O problema base é 24576 × 18432 com 1500 iterações. Para alterar, passe `WIDTH`, `HEIGHT`, `MAX_ITER` e/ou `RUNS` na linha de comando. Use um rótulo diferente em `VERSION` para não misturar com as outras execuções:
+
+```bash
+make experiments VERSION=warp3k CODE_DIR=opencl_code_optimized_warp MAX_ITER=3000
+make run MAX_ITER=3000        # serial
+```
+
+### Remoto (colmeia / TITAN RTX)
+
+Um único comando sincroniza o código, roda lá e traz os resultados (sem imagens):
+
+```bash
+make remote-all REMOTE_USER=grupoX VERSION=memory_constant CODE_DIR=opencl_code_optimized_memory_constant
+# serial no remoto
+make remote-all REMOTE_USER=grupoX REMOTE_SCRIPT=bash/run_serial.sh
+# com 3000 iterações
+make remote-all REMOTE_USER=grupoX VERSION=warp3k CODE_DIR=opencl_code_optimized_warp MAX_ITER=3000
+```
+
+- O ssh pede a senha uma vez (conexão reaproveitada por 15 min). Para não digitar: `ssh-copy-id -p 8104 grupoX@lacad.uefs.br`.
+- `WIDTH`, `HEIGHT`, `MAX_ITER` e `RUNS` são repassados ao remoto apenas quando passados na linha de comando.
+- As etapas também podem ser rodadas separadas: `make remote-sync`, `make remote-run`, `make remote-pull`.
+- A bateria completa é longa (o serial em 24576×18432 leva ~3,5 min por execução com 1500 iterações e cerca do dobro com 3000). Se a conexão cair, os resultados ficam no remoto: `make remote-pull REMOTE_USER=grupoX`.
+- Não rode duas baterias ao mesmo tempo na mesma máquina: elas disputam CPU/GPU e distorcem os tempos.
+
+---
+
 ## Onde Encontrar os Resultados
 
 Os resultados de cada execução são salvos em um diretório com data e hora para nunca sobrescrever dados anteriores:
@@ -105,6 +165,14 @@ python3 bash/summarize_opencl.py \
   ```bash
   ./mandelbrot_opencl 1000 1000 200 16 16 opencl_images/saida.pgm
   ```
+- **Outra versão do código** (compila com outro binário, sem sobrescrever o naive):
+  ```bash
+  make run-opencl OPENCL_DIR=opencl_code_optimized_memory_constant \
+       OPENCL_TARGET=mandelbrot_opencl_memory_constant \
+       ARGS="24576 18432 1500 16 8 opencl_images/out.pgm"
+  ```
+  O mesmo vale para `make test-opencl` e `make validate` (use o mesmo `OPENCL_TARGET`).
+  Na versão memory_constant o arquivo `.bin` é de 8 bits (tons de cinza); o validador detecta o formato pelo tamanho do arquivo.
 - **Validador de corretude pontual**:
   ```bash
   make validate W=1000 H=1000 ITER=200 LX=16 LY=16

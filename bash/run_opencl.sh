@@ -29,7 +29,7 @@
 #   MONITOR_MAX_ITER          MAX_ITER do "monitor"   (12000)
 #   VERSION                   rotulo da versao do kernel: naive, coalesced, ... (naive)
 #                             Troque ao testar uma otimizacao: os resultados nunca se misturam.
-#   CODE_DIR                  diretorio do codigo OpenCL (opencl_code | opencl_code_optimized)
+#   CODE_DIR                  diretorio do codigo OpenCL (opencl_code | opencl_code_optimized_warp)
 #                             O meta.txt registra o commit e o sha256 do kernel e do host usados.
 #
 # Saída: results/<hostname>/opencl/<VERSION>_<AAAAMMDD-HHMMSS>/   (uma pasta por execucao)

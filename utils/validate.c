@@ -4,14 +4,17 @@
 // -Dmain=serial_main_unused, ver Makefile), entao a referencia e exatamente o serial.
 //
 // Uso: ./utils/validate <width> <height> <max_iter> <iters.bin>
-//   iters.bin: matriz de iteracoes (ushort, linha a linha) gerada por
-//              ./mandelbrot_opencl W H ITER LX LY arquivo.bin
+//   iters.bin: gerado por ./mandelbrot_opencl W H ITER LX LY arquivo.bin. Dois formatos,
+//              detectados pelo tamanho do arquivo:
+//                - W*H*2 bytes: contagens de iteracao (ushort), versoes ate "warp"
+//                - W*H   bytes: tons de cinza (uchar), versao "memory_constant"; o serial e
+//                                convertido com a mesma LUT (iteracao -> cinza) antes de comparar
 //
-// A saida do kernel sao contagens de iteracao (inteiros), entao a tolerancia e 0:
-// qualquer diferenca de iteracao e divergencia. Retorna 0 se tudo igual, 1 se houver diferenca.
+// A tolerancia e 0: qualquer diferenca (de iteracao ou de tom de cinza) e divergencia. Retorna 0 se tudo igual, 1 se houver diferenca.
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 // definida em serial_c_code/image_generator.c
 int mandelbrot(int px, int py, int width, int height,
@@ -31,17 +34,35 @@ int main(int argc, char **argv)
    int width = atoi(argv[1]), height = atoi(argv[2]), max_iter = atoi(argv[3]);
    size_t n = (size_t)width * height;
 
-   unsigned short *gpu = (unsigned short *)malloc(n * sizeof(unsigned short));
-   if (!gpu) { fprintf(stderr, "sem memoria\n"); return 2; }
-
    FILE *fp = fopen(argv[4], "rb");
    if (!fp) { perror("abrindo arquivo"); return 2; }
-   size_t got = fread(gpu, sizeof(unsigned short), n, fp);
+   fseek(fp, 0L, SEEK_END);
+   long fsize = ftell(fp);
+   rewind(fp);
+
+   int u8 = 0;
+   if ((size_t)fsize == n) u8 = 1;
+   else if ((size_t)fsize != n * sizeof(unsigned short)) {
+      fprintf(stderr, "arquivo com %ld bytes, esperado %zu (uchar) ou %zu (ushort)\n",
+              fsize, n, n * sizeof(unsigned short));
+      return 2;
+   }
+
+   unsigned short *gpu = (unsigned short *)malloc(n * sizeof(unsigned short));
+   unsigned char *gpu8 = (unsigned char *)malloc(n);
+   unsigned char *lut = (unsigned char *)malloc((size_t)max_iter + 1);
+   if (!gpu || !gpu8 || !lut) { fprintf(stderr, "sem memoria\n"); return 2; }
+
+   size_t got = u8 ? fread(gpu8, 1, n, fp) : fread(gpu, sizeof(unsigned short), n, fp);
    fclose(fp);
    if (got != n) {
       fprintf(stderr, "arquivo com %zu valores, esperado %zu\n", got, n);
       return 2;
    }
+
+   // mesma LUT usada pelo host OpenCL (iteracao -> tom de cinza)
+   for (int i = 0; i < max_iter; i++) lut[i] = (unsigned char)(sinf(0.1f * i) * 127.5f + 127.5f);
+   lut[max_iter] = 0;
 
    size_t mismatches = 0, first_x = 0, first_y = 0;
    int first_gpu = 0, first_cpu = 0, max_diff = 0;
@@ -50,7 +71,8 @@ int main(int argc, char **argv)
    for (int py = 0; py < height; py++) {
       for (int px = 0; px < width; px++) {
          int ref = mandelbrot(px, py, width, height, MIN_X, MAX_X, MIN_Y, MAX_Y, max_iter);
-         int out = gpu[(size_t)py * width + px];
+         if (u8) ref = lut[ref];   // compara em tom de cinza
+         int out = u8 ? gpu8[(size_t)py * width + px] : gpu[(size_t)py * width + px];
          sum_cpu += (unsigned)ref;
          sum_gpu += (unsigned)out;
          if (ref != out) {
@@ -65,6 +87,7 @@ int main(int argc, char **argv)
    printf("VALIDATE_SIZE: %dx%d\n", width, height);
    printf("VALIDATE_MAX_ITER: %d\n", max_iter);
    printf("VALIDATE_PIXELS: %zu\n", n);
+   printf("VALIDATE_FORMAT: %s\n", u8 ? "uchar (tom de cinza)" : "ushort (iteracoes)");
    printf("VALIDATE_SUM_SERIAL: %llu\n", sum_cpu);
    printf("VALIDATE_SUM_OPENCL: %llu\n", sum_gpu);
    printf("VALIDATE_MISMATCHES: %zu\n", mismatches);
@@ -76,5 +99,7 @@ int main(int argc, char **argv)
    printf("VALIDATE_RESULT: %s\n", mismatches ? "FAIL" : "OK");
 
    free(gpu);
+   free(gpu8);
+   free(lut);
    return mismatches ? 1 : 0;
 }

@@ -1,0 +1,33 @@
+================================================================================
+RELATÓRIO DE EXECUÇÃO SERIAL - CONJUNTO DE MANDELBROT (HPC)
+================================================================================
+
+1. PARÂMETROS CONGELADOS DO PROBLEMA:
+   - Resolução:                   24576 x 18432 (452,984,832 pixels)
+   - Região do plano complexo:    [-2.0, 1.0] x [-1.5, 1.5]
+   - Max iterações por pixel:     3000
+   - Saída de imagem:             results/colmeia4/serial/20261127-182009/mandelbrot_serial.ppm
+
+2. INFORMAÇÕES DE AMBIENTE E COMPILAÇÃO:
+   - Compilador:                  gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+   - Linha de compilação:         gcc -O2 serial_c_code/image_generator.c serial_c_code/mandelbrot.c serial_c_code/complex.c -lm -o ./serial
+   - Flags:                       -O2
+   - lscpu:                       Salvo em results/colmeia4/serial/20261127-182009/lscpu.txt
+
+3. CONTAGEM GLOBAL E ESTIMATIVA DE FLOPS:
+   - Total de iterações somadas:  230,073,929,865
+   - Operações por iteração:      8 FLOP/iteração
+   - Total estimado de FLOPs:     1,840,591,438,920 FLOPs
+   - Desempenho Serial:           4.3236 GFLOPS
+
+4. RESULTADOS DAS 3 EXECUÇÕES:
+--------------------------------------------------------------------------------
+Execução | clock_gettime (s) | Wall-clock (s) | User time (s) | System (s) | Max RSS (KB)
+--------------------------------------------------------------------------------
+       1 |        425.686004 |        425.680 |        423.09 |       0.68 |         2112
+       2 |        425.728356 |        425.990 |        423.09 |       0.90 |         2112
+       3 |        425.704343 |        425.970 |        423.13 |       0.85 |         2112
+--------------------------------------------------------------------------------
+MÉDIA    |        425.706234 |        425.880 |        423.10 |       0.81 |         2112
+DESV.PAD |          0.021239 |
+================================================================================

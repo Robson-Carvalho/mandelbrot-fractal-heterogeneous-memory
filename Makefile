@@ -20,7 +20,7 @@ SERIAL_HDRS   = $(SERIAL_DIR)/mandelbrot.h \
 SERIAL_TARGET = serial
 
 # 2. Projeto OpenCL (Mandelbrot paralelo)
-# OPENCL_DIR escolhe a versao do codigo: opencl_code (ingenua) ou opencl_code_optimized.
+# OPENCL_DIR escolhe a versao do codigo: opencl_code (ingenua) ou opencl_code_optimized_warp.
 # OPENCL_TARGET e o nome do binario (um por versao, para nao sobrescrever).
 OPENCL_DIR    ?= opencl_code
 OPENCL_SRCS   = $(OPENCL_DIR)/mandelbrot_host.c
@@ -113,6 +113,9 @@ CODE_DIR    ?= opencl_code
 GIT_COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo n/a)
 GIT_DIRTY   ?= $(shell git status --porcelain 2>/dev/null | wc -l)
 
+# repassa ao remoto so o que foi definido na linha de comando (problema base: WIDTH HEIGHT MAX_ITER RUNS)
+FWD_ENV     = $(foreach v,WIDTH HEIGHT MAX_ITER RUNS,$(if $(filter command line,$(origin $(v))),$(v)=$($(v))))
+
 REMOTE      = $(REMOTE_USER)@$(REMOTE_HOST)
 SSH_CMD     = ssh -p $(REMOTE_PORT) -o ControlMaster=auto -o ControlPersist=15m \
               -o ControlPath=$(HOME)/.ssh/cm-mandelbrot-%C
@@ -148,7 +151,7 @@ remote-sync: check-remote
 
 # Roda no remoto o mesmo comando do local (envia o codigo antes)
 remote-run: remote-sync
-	$(SSH_CMD) $(REMOTE) "cd $(REMOTE_DIR) && GIT_COMMIT=$(GIT_COMMIT) GIT_DIRTY=$(GIT_DIRTY) VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) $(REMOTE_SCRIPT) $(RUN_ARGS)"
+	$(SSH_CMD) $(REMOTE) "cd $(REMOTE_DIR) && GIT_COMMIT=$(GIT_COMMIT) GIT_DIRTY=$(GIT_DIRTY) VERSION=$(VERSION) CODE_DIR=$(CODE_DIR) $(FWD_ENV) $(REMOTE_SCRIPT) $(RUN_ARGS)"
 
 # Traz results/ do remoto (sem imagens). Pastas tem data-hora: nada e sobrescrito.
 remote-pull: check-remote
